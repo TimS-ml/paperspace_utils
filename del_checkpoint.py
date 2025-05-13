@@ -1,6 +1,11 @@
 """
 Usage:
-python del_checkpoint.py --model_dir "/path/to/checkpoints" --keep_last_percent 10 --middle_interval_percent 7 --early_interval_percent 15 --dry_run
+
+# use percent
+python del_checkpoint.py --model_dir "/notebooks/x-transformers/checkpoints/<run_name>" --early_interval 5000 --middle_interval 10000 --last_interval 2000 --middle_start_percent 33 --last_start_percent 90 --dry_run
+
+# or use specific steps
+python del_checkpoint.py --model_dir "/notebooks/x-transformers/checkpoints/<run_name>" --early_interval 5000 --middle_interval 10000 --last_interval 2000 --middle_start_steps 50000 --last_start_steps 100000 --dry_run
 """
 
 import os
@@ -21,47 +26,73 @@ def get_model_checkpoints(model_dir):
     
     model_files.sort(key=lambda x: x[1])
     return model_files
-def calculate_checkpoints_to_keep(model_files, keep_last_percent=5, 
-                                 middle_interval_percent=5, early_interval_percent=10):
-    """Calculate checkpoints to keep using percentages instead of hardcoded steps"""
+
+def calculate_checkpoints_to_keep(model_files, early_interval=5000, middle_interval=10000, 
+                                  last_interval=2000, middle_start_percent=None, 
+                                  last_start_percent=None, middle_start_steps=None, 
+                                  last_start_steps=None):
+    """Calculate checkpoints to keep using fixed intervals for three phases
+    
+    Args:
+        model_files: List of (filepath, step) tuples
+        early_interval: Fixed interval for early phase (in steps)
+        middle_interval: Fixed interval for middle phase (in steps)
+        last_interval: Fixed interval for last phase (in steps)
+        middle_start_percent: Start point for middle phase (% of total range)
+        last_start_percent: Start point for last phase (% of total range)
+        middle_start_steps: Start point for middle phase (in steps)
+        last_start_steps: Start point for last phase (in steps)
+    """
     if not model_files:
         return set()
         
     to_keep = set()
     
     # Always keep first and last checkpoints
-    to_keep.add(model_files[0][1])
-    to_keep.add(model_files[-1][1])
-    
-    last_step = model_files[-1][1]
     first_step = model_files[0][1]
+    last_step = model_files[-1][1]
+    to_keep.add(first_step)
+    to_keep.add(last_step)
+    
     total_range = last_step - first_step
     
-    # Keep all checkpoints in last N%
-    keep_last_threshold = last_step - (total_range * keep_last_percent / 100)
-    for _, step in model_files:
-        if step > keep_last_threshold:
-            to_keep.add(step)
+    # Calculate phase boundaries based on percent or steps
+    if middle_start_steps is not None:
+        middle_start = middle_start_steps
+    elif middle_start_percent is not None:
+        middle_start = first_step + (total_range * middle_start_percent / 100)
+    else:
+        # Default to 33%
+        middle_start = first_step + (total_range * 0.33)
     
-    # Calculate middle phase interval (as percentage of total range)
-    middle_start = first_step + (total_range * 1/3)
-    middle_end = keep_last_threshold
-    middle_interval = max(1, int(total_range * middle_interval_percent / 100))
+    if last_start_steps is not None:
+        last_start = last_start_steps
+    elif last_start_percent is not None:
+        last_start = first_step + (total_range * last_start_percent / 100)
+    else:
+        # Default to 90%
+        last_start = first_step + (total_range * 0.9)
     
-    for step in range(int(middle_start), int(middle_end), middle_interval):
+    # Early phase with fixed interval (from first to middle_start)
+    for step in range(first_step, int(middle_start), early_interval):
+        if step != first_step:  # Skip first step as it's already added
+            closest_step = find_closest_step(model_files, step)
+            if closest_step is not None:
+                to_keep.add(closest_step)
+    
+    # Middle phase with fixed interval (from middle_start to last_start)
+    for step in range(int(middle_start), int(last_start), middle_interval):
         closest_step = find_closest_step(model_files, step)
         if closest_step is not None:
             to_keep.add(closest_step)
     
-    # Calculate early phase interval (as percentage of total range)
-    early_end = middle_start
-    early_interval = max(1, int(total_range * early_interval_percent / 100))
-    
-    for step in range(first_step, int(early_end), early_interval):
-        closest_step = find_closest_step(model_files, step)
-        if closest_step is not None:
-            to_keep.add(closest_step)
-            
+    # Last phase with fixed interval (from last_start to last step)
+    for step in range(int(last_start), last_step, last_interval):
+        if step != last_step:  # Skip last step as it's already added
+            closest_step = find_closest_step(model_files, step)
+            if closest_step is not None:
+                to_keep.add(closest_step)
+                
     return to_keep
 
 def find_closest_step(model_files, target_step):
@@ -82,18 +113,40 @@ def main():
     parser = argparse.ArgumentParser(description='Model checkpoint cleanup tool')
     parser.add_argument('--model_dir', type=str, default=None, 
                         help='Directory containing model checkpoints')
-    parser.add_argument('--keep_last_percent', type=float, default=5, 
-                        help='Keep all checkpoints in last N% of training')
-    parser.add_argument('--middle_interval_percent', type=float, default=5, 
-                        help='Middle phase keep interval (% of total range)')
-    parser.add_argument('--early_interval_percent', type=float, default=10, 
-                        help='Early phase keep interval (% of total range)')
+    
+    # Phase intervals
+    parser.add_argument('--early_interval', type=int, default=5000, 
+                        help='Early phase keep interval (fixed number of steps)')
+    parser.add_argument('--middle_interval', type=int, default=10000, 
+                        help='Middle phase keep interval (fixed number of steps)')
+    parser.add_argument('--last_interval', type=int, default=2000, 
+                        help='Last phase keep interval (fixed number of steps)')
+    
+    # Phase boundaries - percent
+    parser.add_argument('--middle_start_percent', type=float, default=None,
+                        help='Start point for middle phase (% of total range)')
+    parser.add_argument('--last_start_percent', type=float, default=None,
+                        help='Start point for last phase (% of total range)')
+    
+    # Phase boundaries - steps
+    parser.add_argument('--middle_start_steps', type=int, default=None,
+                        help='Start point for middle phase (specific step number)')
+    parser.add_argument('--last_start_steps', type=int, default=None,
+                        help='Start point for last phase (specific step number)')
+    
     parser.add_argument('--dry_run', action='store_true', 
                         help='Show files to be deleted without actually deleting')
     parser.add_argument('--no_confirm', action='store_true', 
                         help='Delete without confirmation')
     
     args = parser.parse_args()
+    
+    # Default values if neither percent nor steps provided
+    if args.middle_start_percent is None and args.middle_start_steps is None:
+        args.middle_start_percent = 33
+        
+    if args.last_start_percent is None and args.last_start_steps is None:
+        args.last_start_percent = 90
     
     # If no directory specified, use newest checkpoint directory
     if args.model_dir is None:
@@ -119,9 +172,13 @@ def main():
     
     to_keep = calculate_checkpoints_to_keep(
         model_files, 
-        args.keep_last_percent,
-        args.middle_interval_percent,
-        args.early_interval_percent
+        early_interval=args.early_interval,
+        middle_interval=args.middle_interval,
+        last_interval=args.last_interval,
+        middle_start_percent=args.middle_start_percent,
+        last_start_percent=args.last_start_percent,
+        middle_start_steps=args.middle_start_steps,
+        last_start_steps=args.last_start_steps
     )
     
     files_to_delete = [(filename, step) for filename, step in model_files if step not in to_keep]
