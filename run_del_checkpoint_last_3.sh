@@ -11,5 +11,5 @@ fi
 
 for DIR in $TOP_DIRS; do
     echo "Processing: $DIR"
-    python del_checkpoint.py --model_dir "$DIR"
+    python del_checkpoint.py --model_dir "$DIR" --no-confirm
 done

@@ -225,7 +225,7 @@ def main():
     # Safety check - confirmation
     if not args.no_confirm:
         confirmation = input("\nContinue with deletion? (yes/no): ")
-        if confirmation.lower() != "yes":
+        if confirmation.lower() not in ("yes", "y"):
             print("Deletion cancelled.")
             return
     
